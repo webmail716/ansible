@@ -1,0 +1,42 @@
+---
+
+database_user: db_user
+database_password: "{{ vault_database_password }}"
+database_backup_path: /var/backups/mysql
+database_name: db_production
+database_backup_share: /mnt/db_backup/
+
+network_mount_user: jgreschler
+network_mount_password: "{{ vault_network_mount_password }}"
+
+#clarity_email_address: clarity@sleepdata.com
+email_notifications_recipients: webmail716@gmail.com  
+
+app_name: my_app
+app_user: www-data
+app_user_home: /data/vhosts
+app_home: "{{ app_user_home }}/{{ app_name }}"
+app_shared_dir: "{{ app_home }}/shared"
+app_user_email_address: webmail716@gmail.com  
+app_user_email_password: "{{ vault_app_user_email_password }}"
+app_user_network_credentials_path: "{{ app_user_home }}/.smb-credentials"
+
+user_public_keys:
+  jgreschler:
+    public_key: "{{ lookup('file', 'files/jgreschler.pub') }}"
+
+ansistrano_deploy_to: "{{ app_home }}"
+ansistrano_deploy_via: "git"
+ansistrano_keep_releases: 5
+
+ansistrano_shared_paths:
+  - log
+
+ansistrano_shared_files:
+  - config/application.yml
+  - config/database.yml
+
+ansistrano_git_repo: 
+ansistrano_git_branch: master
+ansistrano_git_identity_key_path: "~/.ssh/id_rsa"
+

@@ -1,0 +1,258 @@
+---
+- name: load variables
+  hosts: all
+  
+  tasks:
+    - name: include vault file
+      include_vars: vault.yml
+    
+    - name: include variables file
+      include_vars: vars.yml
+
+- name: download key for passenger install
+  hosts: all
+  become: yes
+  
+  tasks:
+    # Passenger repository setup.  (Copied from geerlingguy.passenger role.)
+    - name: Add Passenger apt key.
+      apt_key:
+        # Note: Passenger role just uses "keyserver.ubuntu.com" which failed due
+        # due http proxy issues?  Specifying hkp protocol avoids the problem.
+        #keyserver: keyserver.ubuntu.com
+        keyserver: hkp://keyserver.ubuntu.com:80
+        id: 561F9B9CAC40B2F7
+        state: present
+
+
+- name: provision server
+  hosts: all
+  become: yes
+      
+  roles:
+    - role: geerlingguy.ruby
+      ruby_install_from_source: true
+      ruby_install_bundler: true
+      
+    - role: geerlingguy.passenger
+      passenger_app_root: "{{ app_home }}/current/public"
+      passenger_app_env: production
+  
+  tasks:
+#    - name: update /etc/apt/sources
+#      apt_repository: repo='deb http://http.us.debian.org/debian stable main contrib non-free' state=present
+#      sudo: True
+
+    - name: install libraries
+      apt: pkg={{ item }} update_cache=yes cache_valid_time=3600
+      with_items:
+        - git
+        - libpcre3
+        - libpcre3-dev
+        - openssl
+        - ssl-cert
+        - libssl-dev
+        - mysql-server
+        - mysql-client
+        - libmysqlclient-dev
+        - build-essential
+        - libreadline-gplv2-dev
+        - gettext
+        - ntp
+        - libsasl2-modules
+        - sudo
+        - curl
+        - libcurl4-openssl-dev
+        - wget
+        - libyaml-dev
+        - qt4-qmake
+        - qt4-dev-tools
+        - libxml2
+        - libxml2-dev
+        - libxslt1-dev
+        - libxslt1.1
+        - imagemagick
+        - python-apt
+        - python-pip
+        - python-dev
+        # email packages
+        - postfix
+        - mailutils
+        - cifs-utils
+        - linux-generic
+        # monit for system monitoring and process restarting
+        - monit 
+
+#    - name: "create {{ app_user }} user"
+#      user:
+#        name: "{{ app_user }}"
+#        # TODO: change password to something more secure and move to a vault
+#        password: "{{ 'password'|password_hash('sha512') }}"
+#        shell: /bin/bash
+#        home: "{{ app_user_home }}"
+#        group: admin
+#      sudo: True
+
+    - name: stop nginx (so user home can be changed)
+      service: name=nginx state=stopped
+        
+    - name: set app user home
+      user:
+        name: "{{ app_user }}"
+        home: "{{ app_user_home }}"
+        shell: /bin/bash
+        groups: admin,www-data
+      
+    - name: start nginx
+      service: name=nginx state=started
+    
+    - name: give admin users "no password" sudo access
+      lineinfile:
+        dest: /etc/sudoers
+        state: present
+        regexp: '^%admin'
+        line: '%admin ALL=(ALL) NOPASSWD: ALL'
+      
+# Note: these folders are automatically created when log folder is created
+#    - name: create app home folder
+#      file: 'dest="{{ app_home }}" state=directory owner="{{ app_user }}" mode=0755'
+#      
+#    - name: create shared folder
+#      file: 'dest="{{ app_shared_dir }}" state=directory owner="{{ app_user }}" mode=0755'
+
+    - name: create shared/log folder
+      file: 'dest="{{ app_shared_dir }}/log" state=directory owner="{{ app_user }}" mode=0755'
+
+    - name: create shared/config folder
+      file: 'dest="{{ app_shared_dir }}/config" state=directory owner="{{ app_user }}" mode=0755'
+
+    - name: copy application.yml
+      template:
+        src: application.yml.j2
+        dest: "{{ app_shared_dir }}/config/application.yml"
+        owner: "{{ app_user }}"
+
+    - name: copy database.yml
+      template:
+        src: database.yml.j2
+        dest: "{{ app_shared_dir }}/config/database.yml"
+        owner: "{{ app_user }}"
+        
+    - name: make /var/backups writable
+      file: 'dest="/var/backups" state=directory mode=0777'
+
+    - name: create /etc/automysqlbackup folder
+      file: 'dest="/etc/automysqlbackup" state=directory owner="{{ app_user }}" mode=0755'
+
+    - name: copy database backup config file
+      template:
+        src: automysqlbackup.conf.j2
+        dest: /etc/automysqlbackup/automysqlbackup.conf
+        owner: "{{ app_user }}"
+
+    - name: copy database backup script
+      copy:
+        src: automysqlbackup
+        dest: /usr/local/bin
+        owner: "{{ app_user }}"
+        mode: 0755
+
+    - name: copy monit rc file to server 
+      template: 
+        src: monitrc.j2 
+        dest: "/etc/monit/monitrc"
+        owner: "root"
+        mode: 0600
+
+    - name: reload monit 
+      shell: monit reload 
+      
+    - name: install SSH keys for www-data
+      authorized_key:
+        user: "{{ app_user }}"
+        key: "{{ item.value.public_key }}"
+      with_dict: "{{ user_public_keys }}"
+
+    - name: create admin users
+      user:
+        name: "{{ item }}"
+        shell: /bin/bash
+        group: admin
+      with_items:
+        - adetorres
+        - jgreschler
+      
+    - name: install SSH keys for individual user accounts
+      authorized_key:
+        user: "{{ item.key }}"
+        key: "{{ item.value.public_key }}"
+      with_dict: "{{ user_public_keys }}"
+
+    - name: create postfix e-mail credentials file
+      copy:
+        content: "[smtp.gmail.com]:587  {{ app_user_email_address }}:{{ app_user_email_password }}"
+        dest: /etc/postfix/sasl_passwd
+        owner: root
+        mode: 0600
+
+    - name: copy postfix config file
+      copy:
+        src: postfix.main.cf
+        dest: /etc/postfix/main.cf
+        owner: root
+        mode: 0644
+        
+    - name: process postfix password
+      shell: postmap /etc/postfix/sasl_passwd
+      
+    - name: restart postfix
+      service:
+        name: postfix
+        state: started
+        enabled: yes
+
+    - name: copy samba credentials file
+      template:
+        src: smb-credentials.j2
+        dest: "{{ app_user_network_credentials_path }}"
+        owner: "{{ app_user }}"
+        mode: 0600
+          
+    - name: create {{ database_backup_share }} for db backups
+      file:
+        dest: "{{ database_backup_share }}"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: 0755
+
+    - name: add mount for database backups
+      mount:
+        name: "{{ database_backup_share }}"
+        src: //192.168.49.12/db_backup
+        fstype: cifs
+        opts: "credentials={{ app_user_network_credentials_path }},iocharset=utf8,uid={{ app_user }},gid={{ app_user }}"
+        state: present
+        
+    - name: create /mnt/general_and_admin for spitfire/autodialer
+      file:
+        dest: "/mnt/general_and_admin"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: 0755
+
+    - name: add mount for general/admin (spitfire/autodialer folders)
+      mount:
+        name: /mnt/general_and_admin
+        # "cat /etc/fstab" should look like: //192.168.49.12/General\040and\040Admin
+        src: "//192.168.49.12/General and Admin"
+        fstype: cifs
+        opts: "credentials={{ app_user_network_credentials_path }},iocharset=utf8,cache=none,uid={{ app_user }},gid={{ app_user }}"
+        state: present
+
+    - name: upload rails logrotate conf
+      template: 
+        src: clarity.logrotate.conf.j2
+        dest: /etc/logrotate.d/clarity.conf 
+        mode: 0644
+        
+        
